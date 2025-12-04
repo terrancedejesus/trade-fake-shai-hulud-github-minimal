@@ -1,0 +1,29 @@
+# Shai Hulud 2.0 - Backdoor Workflow (discussion.yaml)
+# FOR DEFENSIVE SECURITY TESTING ONLY
+#
+# The malware creates this to enable persistent backdoor access.
+# It registers infected machines as self-hosted runners with label 'SHA1HULUD'
+# and allows arbitrary command execution via GitHub discussions.
+#
+# DETECTION:
+# - Workflow triggered by discussion events
+# - Self-hosted runner with unusual label
+# - Command injection: ${{ github.event.discussion.body }}
+
+name: Discussion Handler
+
+on:
+  discussion:
+    types: [created, edited]
+
+jobs:
+  process:
+    runs-on: [self-hosted, SHA1HULUD]
+    steps:
+      - name: Process Discussion
+        # VULNERABLE - allows arbitrary command execution
+        # In real attack: run: ${{ github.event.discussion.body }}
+        run: |
+          echo "Would execute: github.event.discussion.body"
+          echo "Title: ${{ github.event.discussion.title }}"
+          echo "Author: ${{ github.event.discussion.user.login }}"

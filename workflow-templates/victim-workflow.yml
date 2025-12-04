@@ -1,0 +1,79 @@
+# Shai Hulud 2.0 - Victim Workflow Simulation
+# FOR DEFENSIVE SECURITY TESTING ONLY
+#
+# Simulates a legitimate CI job that installs a compromised npm package.
+# Use this in your test repository to generate telemetry.
+
+name: Build and Test
+
+on:
+  push:
+    branches: [main, test-*]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # For self-hosted testing: runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Optional: Setup cloud CLIs for realistic testing
+      - name: Setup AWS CLI
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+        continue-on-error: true
+
+      - name: Setup Azure CLI
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+        continue-on-error: true
+
+      - name: Setup GCP CLI
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        continue-on-error: true
+
+      # ATTACK SIMULATION - npm install triggers preinstall hook
+      - name: Install Dependencies
+        run: |
+          echo "Installing malicious package..."
+          # Option 1: Clone from repo
+          # git clone https://github.com/YOUR_ORG/shai-hulud-github.git /tmp/pkg
+          # cd /tmp/pkg && npm install
+
+          # Option 2: If package is in this repo
+          npm install
+
+      - name: Display Findings
+        run: |
+          echo "=== Harvest Report ==="
+          cat harvest_report.json 2>/dev/null || echo "No report"
+          echo ""
+          echo "=== GitHub Findings ==="
+          cat github.json 2>/dev/null || echo "No GitHub findings"
+
+      - name: Upload Findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: shai-hulud-findings-${{ github.run_id }}
+          path: "*.json"
+          retention-days: 7
+        if: always()

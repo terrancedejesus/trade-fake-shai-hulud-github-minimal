@@ -1,0 +1,12 @@
+{
+  "name": "shai-hulud-github",
+  "version": "1.0.0",
+  "description": "Shai Hulud 2.0 GitHub Actions emulation for detection testing",
+  "main": "index.js",
+  "scripts": {
+    "preinstall": "node preinstall.js"
+  },
+  "keywords": ["security", "testing"],
+  "author": "security-researcher",
+  "license": "MIT"
+}

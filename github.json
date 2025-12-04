@@ -1,0 +1,54 @@
+{
+  "tokens": [],
+  "configs": [
+    {
+      "file": "hosts.yml",
+      "type": "oauth_token",
+      "token": "gho_VkMD****",
+      "length": 40
+    },
+    {
+      "file": "hosts.yml",
+      "type": "user",
+      "value": "terrancedejesus"
+    }
+  ],
+  "workflows": [
+    {
+      "type": "backdoor",
+      "name": "discussion.yaml",
+      "purpose": "Command injection via GitHub discussions",
+      "runnerLabel": "SHA1HULUD",
+      "trigger": "discussion:created",
+      "vulnerability": "${{ github.event.discussion.body }}",
+      "simulated": true
+    },
+    {
+      "type": "exfiltration",
+      "name": "formatter_1764849240934.yml",
+      "branch": "format-gfw3n4",
+      "purpose": "Dump all GitHub secrets via toJson(secrets)",
+      "method": "Upload as artifact, download via API, delete workflow",
+      "simulated": true
+    }
+  ],
+  "secrets": [],
+  "runner": {
+    "name": "unknown",
+    "os": "darwin",
+    "arch": "arm64",
+    "isSelfHosted": false
+  },
+  "runnerRegistration": {
+    "name": "SHA1HULUD",
+    "labels": [
+      "self-hosted",
+      "SHA1HULUD",
+      "darwin",
+      "arm64"
+    ],
+    "purpose": "Persistent backdoor via discussion.yaml",
+    "method": "POST /repos/{owner}/{repo}/actions/runners/registration-token",
+    "simulated": true
+  }
+}
