@@ -124,7 +124,7 @@ The workflow will run automatically, executing the supply chain attack simulatio
 | `actionsSecrets.json` | Repository secrets (if accessible) |
 | `harvest_report.json` | Complete findings |
 
-## Detection Opportunities
+## Detection Artifacts
 
 ### File Access
 - `~/.config/gh/hosts.yml`
@@ -192,4 +192,3 @@ GITHUB_ACTIONS=true npm install
 ## References
 
 - [Wiz.io: Shai Hulud 2.0](https://www.wiz.io/blog/shai-hulud-2-0-ongoing-supply-chain-attack)
-- [GitHub Actions Security](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions)
