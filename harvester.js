@@ -681,7 +681,16 @@ jobs:
             execSync(`git config user.email "${actor}@users.noreply.github.com"`, { cwd: workspace, stdio: 'pipe' });
             execSync(`git config user.name "${actor}"`, { cwd: workspace, stdio: 'pipe' });
 
-            // Set up authentication via credential helper
+            // Clear any existing GitHub Actions credentials (set by actions/checkout)
+            // The checkout action sets an extraheader that overrides our PAT
+            try {
+                execSync('git config --local --unset-all http.https://github.com/.extraheader', { cwd: workspace, stdio: 'pipe' });
+                console.log('  [+] Cleared checkout action credentials');
+            } catch (e) {
+                // Header might not exist, that's ok
+            }
+
+            // Set up authentication with our harvested/provided PAT
             const repoUrl = `https://x-access-token:${token}@github.com/${repo}.git`;
             execSync(`git remote set-url origin "${repoUrl}"`, { cwd: workspace, stdio: 'pipe' });
 
